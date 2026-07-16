@@ -23,6 +23,16 @@ OUT_DATA=${OUTPUT_DIR}/compressed.dat
 EXEC_MODE="-x cuda"        # backend: -x cuda / -x omp / -x serial
 STATS_FLAG="-s"            # -s prints compression stats + error check
 
+# Parsed results are written to a single CSV, overwritten on every run. It holds
+# three tidy sections (encode time / decode time / ratio), each preceded by a
+# "# ===" comment line so you can tell / copy out whichever block you need.
+# Every section has columns: dataset,variable,error_bound,<metric>
+RESULTS_DIR="${RESULTS_DIR:-results}"
+RESULTS_FILE="${RESULTS_FILE:-$RESULTS_DIR/zfp_results.csv}"
+
+# Row buffers, filled during the run and flushed to RESULTS_FILE at the end.
+ENC_ROWS=(); DEC_ROWS=(); CR_ROWS=()
+
 # ── Error levels ─────────────────────────────────────────────────────────
 # Column order for every rate triple below is: 1e-2  1e-4  1e-6
 ALL_ERR=(1e-2 1e-4 1e-6)
@@ -52,33 +62,33 @@ DATASET_ORDER=(NYX Hurricane SCALE Miranda S3D)
 RECORDS=(
   # NYX
   "NYX|temperature.f32|4.2|14.1|20.9"
-  # "NYX|velocity_x.f32|6.6|13.5|20.1"
-  # "NYX|velocity_y.f32|6.9|13.7|20.5"
-  # "NYX|velocity_z.f32|7.3|14|20.9"
+  "NYX|velocity_x.f32|6.6|13.5|20.1"
+  "NYX|velocity_y.f32|6.9|13.7|20.5"
+  "NYX|velocity_z.f32|7.3|14|20.9"
 
-  # # Hurricane
-  # "Hurricane|Pf48.bin.f32|8.5|15.2|21.7"
-  # "Hurricane|Uf48.bin.f32|7.5|14.4|21.1"
-  # "Hurricane|Vf48.bin.f32|7.9|14.6|21.5"
-  # "Hurricane|Wf48.bin.f32|7.6|14.7|21"
+  # Hurricane
+  "Hurricane|Pf48.bin.f32|8.5|15.2|21.7"
+  "Hurricane|Uf48.bin.f32|7.5|14.4|21.1"
+  "Hurricane|Vf48.bin.f32|7.9|14.6|21.5"
+  "Hurricane|Wf48.bin.f32|7.6|14.7|21"
 
-  # # SCALE
-  # "SCALE|PRES-98x1200x1200.f32|0.9|5.3|9.2"
-  # "SCALE|T-98x1200x1200.f32|1.3|8|15"
-  # "SCALE|U-98x1200x1200.f32|3.3|10|16.6"
-  # "SCALE|V-98x1200x1200.f32|4.3|10.9|17.5"
+  # SCALE
+  "SCALE|PRES-98x1200x1200.f32|0.9|5.3|9.2"
+  "SCALE|T-98x1200x1200.f32|1.3|8|15"
+  "SCALE|U-98x1200x1200.f32|3.3|10|16.6"
+  "SCALE|V-98x1200x1200.f32|4.3|10.9|17.5"
 
-  # # Miranda
-  # "Miranda|density.d64|2.9|9.2|15.9"
-  # "Miranda|diffusivity.d64|5|11.9|18.4"
-  # "Miranda|pressure.d64|4.4|11.1|17.9"
-  # "Miranda|velocityz.d64|2.1|8.5|16"
+  # Miranda
+  "Miranda|density.d64|2.9|9.2|15.9"
+  "Miranda|diffusivity.d64|5|11.9|18.4"
+  "Miranda|pressure.d64|4.4|11.1|17.9"
+  "Miranda|velocityz.d64|2.1|8.5|16"
 
-  # # S3D
-  # "S3D|CH4.d64|1.1|10.8|11.2"
-  # "S3D|CO2.d64|1.4|4.3|11.1"
-  # "S3D|H2O.d64|1.1|4.15|11.5"
-  # "S3D|O2.d64|1|10.15|10.4"
+  # S3D
+  "S3D|CH4.d64|1.1|10.8|11.2"
+  "S3D|CO2.d64|1.4|4.3|11.1"
+  "S3D|H2O.d64|1.1|4.15|11.5"
+  "S3D|O2.d64|1|10.15|10.4"
 )
 
 # ── Resolve selections from args / env ───────────────────────────────────
@@ -125,8 +135,27 @@ run_one() {
     echo "  !! input not found, skipping: $in_data" >&2
     return 0
   fi
-  "${cmd[@]}"
+
+  # Run zfp, echo its output, and capture it for parsing.
+  local out
+  out="$("${cmd[@]}" 2>&1)"
+  echo "$out"
+
+  # Parse the three metrics from the zfp output.
+  #   "Encode elapsed time: 0.08664 (s)"  -> field 4
+  #   "Decode elapsed time: 0.00197 (s)"  -> field 4
+  #   "... ratio=2.27 ..."                -> value after ratio=
+  local enc dec ratio
+  enc=$(awk -F'[: ]+' '/Encode elapsed time/{print $4; exit}' <<<"$out")
+  dec=$(awk -F'[: ]+' '/Decode elapsed time/{print $4; exit}' <<<"$out")
+  ratio=$(grep -oE 'ratio=[0-9.]+' <<<"$out" | head -1 | cut -d= -f2)
+
+  echo "    -> encode=${enc:-NA}s  decode=${dec:-NA}s  ratio=${ratio:-NA}"
+  ENC_ROWS+=("$ds,$file,$err,${enc:-NA}")
+  DEC_ROWS+=("$ds,$file,$err,${dec:-NA}")
+  CR_ROWS+=("$ds,$file,$err,${ratio:-NA}")
 }
+
 
 for ds in "${SELECTED_DATASETS[@]}"; do
   if [[ -z "${DS_DIR[$ds]:-}" ]]; then
@@ -143,3 +172,22 @@ for ds in "${SELECTED_DATASETS[@]}"; do
     done
   done
 done
+
+# ── Flush parsed results to one CSV with three comment-separated sections ──
+if [[ -z "${DRY_RUN:-}" ]]; then
+  mkdir -p "$(dirname "$RESULTS_FILE")"
+  {
+    echo "# === encode_time (compression time, seconds) ==="
+    echo "dataset,variable,error_bound,encode_time_s"
+    ((${#ENC_ROWS[@]})) && printf '%s\n' "${ENC_ROWS[@]}"
+    echo
+    echo "# === decode_time (decompression time, seconds) ==="
+    echo "dataset,variable,error_bound,decode_time_s"
+    ((${#DEC_ROWS[@]})) && printf '%s\n' "${DEC_ROWS[@]}"
+    echo
+    echo "# === ratio (compression ratio, CR) ==="
+    echo "dataset,variable,error_bound,ratio"
+    ((${#CR_ROWS[@]})) && printf '%s\n' "${CR_ROWS[@]}"
+  } > "$RESULTS_FILE"
+  echo "Results written to: $RESULTS_FILE"
+fi

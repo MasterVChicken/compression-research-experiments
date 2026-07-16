@@ -1,0 +1,24 @@
+# --- Scientific data (keep out of git; store separately) ---
+*.f32
+*.d64
+*.dat
+*.dec
+*.bin
+*.raw
+
+# --- Build / install artifacts ---
+build/
+install/
+*.o
+*.so
+*.exe
+
+
+# --- Results ---
+# results/
+# *.log
+
+# --- OS / editor junk ---
+.DS_Store
+*.swp
+__pycache__/

@@ -23,9 +23,42 @@ cuSZp : <WORK_ROOT>/install/cuszp/bin/cuSZp
 mgard : <WORK_ROOT>/mgard-x/install-cuda-hopper/bin/mgard-x
 ```
 
-Requires CUDA + CMake. MGARD is built for the Hopper arch via
+Requires CUDA + CMake. MGARD is currently tested with the Hopper arch via
 `build_mgard_cuda_hopper.sh`; override the build job count with `MGARD_JOBS`
 (default 32).
+
+## ROI visualization experiments
+
+`scripts/roi_experiments.sh` produces the decompressed (`.dec`) outputs used for
+the ROI visualization figures, for all three methods (BlockMGARD, cuZFP, cuSZp),
+for both experiments:
+
+- `same_quality` — fix visual quality, compare compression ratio (SCALE/PRES)
+- `same_cr` — fix compression ratio (~50), compare visual quality (Miranda/density)
+
+Only BlockMGARD uses the ROI tolerance map (built on demand by
+`roi_generator/ROIGenerator.cpp`, compiled automatically); the two baselines use
+a uniform error bound tuned to match BlockMGARD's operating point.
+
+```bash
+cd scripts
+./roi_experiments.sh                 # both experiments, all methods
+./roi_experiments.sh same_cr         # one experiment (same_quality | same_cr)
+DRY_RUN=1 ./roi_experiments.sh       # print commands without running
+VERBOSE=1 ./roi_experiments.sh       # show tool output live (else it goes to the log)
+OUT_DIR=/path ./roi_experiments.sh   # where .dec / maps / compressed go
+```
+
+Run on a GPU node (the executables need CUDA). Everything is written to
+`OUT_DIR` (default `/home/leonli/ROITest/roi_results`):
+
+- one decompressed `.dec` per method and experiment, e.g.
+  `blockmgard_scale_pres.dec`, `zfp_scale_pres.dec`, `cuszp_scale_pres.dec`
+  (and the `*_miranda_density.dec` set for `same_cr`) — these are the inputs to
+  the visualization;
+- the ROI tolerance maps and intermediate compressed streams;
+- `roi_run.log` — the full console output, including each method's compression
+  ratio and BlockMGARD's ROI error-verification summary.
 
 <!-- ===========================================================================
      PARKED: the zfp / cuSZp baseline sections below are commented out for now

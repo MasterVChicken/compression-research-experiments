@@ -13,6 +13,12 @@ install/
 *.so
 *.exe
 
+# --- ROI generator binary + compressed streams (rebuildable) ---
+generate_roi_map
+*.zfp
+*.comp
+*.mgard
+
 
 # --- Results ---
 # results/

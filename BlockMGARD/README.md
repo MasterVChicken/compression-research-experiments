@@ -2,6 +2,37 @@
 
 Experiments for the BlockMGARD paper.
 
+## Install baselines
+
+Build and install the three baseline compressors (cuZFP, cuSZp, MGARD-X) with
+`scripts/install_baselines.sh`. Each tool is cloned from a timing-instrumented
+fork, built, and installed under `$WORK_ROOT/install/<tool>`.
+
+```bash
+cd scripts
+./install_baselines.sh                            # build all three
+./install_baselines.sh zfp cuszp                  # build only the named ones (zfp | cuszp | mgard)
+WORK_ROOT=/path/to/comp ./install_baselines.sh    # install elsewhere (default: /home/leonli/ROITest/comp)
+```
+
+On success it prints the installed executable paths:
+
+```
+zfp   : <WORK_ROOT>/install/zfp/bin/zfp
+cuSZp : <WORK_ROOT>/install/cuszp/bin/cuSZp
+mgard : <WORK_ROOT>/mgard-x/install-cuda-hopper/bin/mgard-x
+```
+
+Requires CUDA + CMake. MGARD is built for the Hopper arch via
+`build_mgard_cuda_hopper.sh`; override the build job count with `MGARD_JOBS`
+(default 32).
+
+<!-- ===========================================================================
+     PARKED: the zfp / cuSZp baseline sections below are commented out for now
+     because those results are not used yet. Uncomment when they are needed.
+=========================================================================== -->
+<!--
+
 ## zfp (cuZFP) baseline
 
 `scripts/zfp_comp_repro.sh` runs the cuZFP baseline over the SDRBENCH datasets.
@@ -129,3 +160,5 @@ dataset,variable,error_bound,decode_time_s,error_check
 dataset,variable,error_bound,ratio,error_check
 ...
 ```
+
+-->

@@ -15,7 +15,8 @@
 #   local1     1 / 0
 #
 # Local and global times are recorded separately; whichever side a configuration
-# does not use (level 0) is recorded as 0.
+# does not use (level 0) is recorded as 0. The compression ratio is written to a
+# separate CSV, one row per variable (no averaging).
 #
 # Each variable has its own tuned relative error bound (see the EB table below);
 # a single `-z` run reports both decomposition and recomposition times because
@@ -39,6 +40,7 @@ OUT_DATA=/home/leonli/ROITest/compressed.dat     # scratch (overwritten each run
 
 RESULTS_DIR="${RESULTS_DIR:-results}"
 RESULTS_FILE="${RESULTS_FILE:-$RESULTS_DIR/hybridhierarchy_results.csv}"
+CR_FILE="${CR_FILE:-$RESULTS_DIR/hybridhierarchy_cr.csv}"   # per-variable, no averaging
 RUN_LOG="${RUN_LOG:-$RESULTS_DIR/hybridhierarchy_run.log}"
 
 # ── Fixed compression settings ────────────────────────────────────────────
@@ -147,6 +149,8 @@ fi
 
 # Raw rows: config,ll,gl,dataset,variable,l_dec,g_dec,l_rec,g_rec
 RAW_ROWS=()
+# CR rows: config,ll,gl,dataset,variable,compression_ratio  (kept per variable)
+CR_ROWS=()
 
 # ── Helpers ───────────────────────────────────────────────────────────────
 strip_color() { sed -E 's/\x1b\[[0-9;]*m//g'; }
@@ -199,14 +203,17 @@ run_one() {
 
   # "[time] Local Decomposition: 0.004355 s (129.610372 GB/s)" -> field 4.
   # A side the config does not use emits no line; record it as 0.
-  local ldec gdec lrec grec
+  local ldec gdec lrec grec cr
   ldec=$(awk '/\[time\] Local Decomposition:/{print $4; exit}'    <<<"$out")
   gdec=$(awk '/\[time\] Global Decomposition:/{print $4; exit}'   <<<"$out")
   lrec=$(awk '/\[time\] Local Recomposition:/{print $4; exit}'    <<<"$out")
   grec=$(awk '/\[time\] Global Recomposition:/{print $4; exit}'   <<<"$out")
+  # "[info] Compression ratio: 28.3488" -> last field
+  cr=$(awk '/\[info\] Compression ratio:/{print $NF; exit}'       <<<"$out")
 
-  echo "    -> local dec/rec = ${ldec:-0}/${lrec:-0} s   global dec/rec = ${gdec:-0}/${grec:-0} s"
+  echo "    -> local dec/rec = ${ldec:-0}/${lrec:-0} s   global dec/rec = ${gdec:-0}/${grec:-0} s   CR = ${cr:-NA}"
   RAW_ROWS+=("$cfg,$ll,$gl,$ds,$var,${ldec:-0},${gdec:-0},${lrec:-0},${grec:-0}")
+  CR_ROWS+=("$cfg,$ll,$gl,$ds,$var,${cr:-NA}")
 }
 
 # ── Main loop ─────────────────────────────────────────────────────────────
@@ -266,7 +273,15 @@ if [[ -z "${DRY_RUN:-}" ]]; then
         }'
     fi
   } > "$RESULTS_FILE"
+
+  # Compression ratio, one row per variable (not averaged).
+  {
+    echo "config,ll,gl,dataset,variable,compression_ratio"
+    ((${#CR_ROWS[@]})) && printf '%s\n' "${CR_ROWS[@]}"
+  } > "$CR_FILE"
+
   echo
-  echo "Results written to: $RESULTS_FILE"
+  echo "Timings written to: $RESULTS_FILE"
+  echo "CR written to:      $CR_FILE"
   echo "Full tool output:   $RUN_LOG"
 fi

@@ -120,8 +120,8 @@ CONFIG=local1 ./hybridhierarchy_repro.sh    # only one config (comma-separated o
 DRY_RUN=1 ./hybridhierarchy_repro.sh        # print commands without running
 ```
 
-Run on a GPU node. Results go to `results/hybridhierarchy_results.csv`, again in
-two sections:
+Run on a GPU node. Timings go to `results/hybridhierarchy_results.csv`, in two
+sections:
 
 ```
 # === per-variable timings (seconds) ===
@@ -129,6 +129,13 @@ config,ll,gl,dataset,variable,local_decomp_s,global_decomp_s,local_recomp_s,glob
 
 # === per-dataset averages over variables (seconds) ===
 config,ll,gl,dataset,num_variables,avg_local_decomp_s,avg_global_decomp_s,avg_local_recomp_s,avg_global_recomp_s
+```
+
+Compression ratios go to a separate file, `results/hybridhierarchy_cr.csv`, with
+one row per variable (not averaged):
+
+```
+config,ll,gl,dataset,variable,compression_ratio
 ```
 
 The full tool output is kept in `results/hybridhierarchy_run.log`.

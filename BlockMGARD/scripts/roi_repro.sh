@@ -15,10 +15,10 @@
 # change them; this script only wires up map generation, I/O and outputs.
 #
 # Usage:
-#   ./roi_experiments.sh                 # run both experiments, all methods
-#   ./roi_experiments.sh same_cr         # only one experiment (same_quality | same_cr)
-#   DRY_RUN=1 ./roi_experiments.sh       # print the commands without running
-#   OUT_DIR=/path ./roi_experiments.sh   # where .dec / maps / compressed go
+#   ./roi_repro.sh                 # run both experiments, all methods
+#   ./roi_repro.sh same_cr         # only one experiment (same_quality | same_cr)
+#   DRY_RUN=1 ./roi_repro.sh       # print the commands without running
+#   OUT_DIR=/path ./roi_repro.sh   # where .dec / maps / compressed go
 #
 set -euo pipefail
 
@@ -36,7 +36,7 @@ OUT_DIR="${OUT_DIR:-/home/leonli/ROITest/roi_results}"   # .dec + maps + compres
 COMPRESSED="${OUT_DIR}/compressed.mgard"                  # scratch (reused per run)
 
 # BlockMGARD error mode for the tolerance map: rel (default) or abs.
-# A/B test with:  EM=abs ./roi_experiments.sh
+# A/B test with:  EM=abs ./roi_repro.sh
 EM="${EM:-rel}"
 
 # ROIGenerator lives beside this script's repo; build-if-missing (zero deps).

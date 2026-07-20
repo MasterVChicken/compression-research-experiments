@@ -29,7 +29,7 @@ Requires CUDA + CMake. MGARD is currently tested with the Hopper arch via
 
 ## ROI visualization experiments
 
-`scripts/roi_experiments.sh` produces the decompressed (`.dec`) outputs used for
+`scripts/roi_repro.sh` produces the decompressed (`.dec`) outputs used for
 the ROI visualization figures, for all three methods (BlockMGARD, cuZFP, cuSZp),
 for both experiments:
 
@@ -42,11 +42,11 @@ a uniform error bound tuned to match BlockMGARD's operating point.
 
 ```bash
 cd scripts
-./roi_experiments.sh                 # both experiments, all methods
-./roi_experiments.sh same_cr         # one experiment (same_quality | same_cr)
-DRY_RUN=1 ./roi_experiments.sh       # print commands without running
-VERBOSE=1 ./roi_experiments.sh       # show tool output live (else it goes to the log)
-OUT_DIR=/path ./roi_experiments.sh   # where .dec / maps / compressed go
+./roi_repro.sh                 # both experiments, all methods
+./roi_repro.sh same_cr         # one experiment (same_quality | same_cr)
+DRY_RUN=1 ./roi_repro.sh       # print commands without running
+VERBOSE=1 ./roi_repro.sh       # show tool output live (else it goes to the log)
+OUT_DIR=/path ./roi_repro.sh   # where .dec / maps / compressed go
 ```
 
 Run on a GPU node (the executables need CUDA). Everything is written to
@@ -59,6 +59,79 @@ Run on a GPU node (the executables need CUDA). Everything is written to
 - the ROI tolerance maps and intermediate compressed streams;
 - `roi_run.log` — the full console output, including each method's compression
   ratio and BlockMGARD's ROI error-verification summary.
+
+## Local vs. global quantization ablation
+
+`scripts/incacheblock_repro.sh` compares two hierarchy configurations at a fixed
+`1e-2` relative error bound, over all five datasets (four variables each):
+
+- `local` — local quantization only (`-ll 1 -gl 0`)
+- `global` — global quantization only (`-ll 0 -gl 1`)
+
+For each run it extracts the decomposition and recomposition times matching the
+mode (`Local *` for the local runs, `Global *` for the global runs) and averages
+them over the four variables of each dataset.
+
+```bash
+cd scripts
+./incacheblock_repro.sh                 # both modes, all datasets
+./incacheblock_repro.sh NYX Miranda     # only these datasets
+MODE=local ./incacheblock_repro.sh      # only one mode (local | global)
+DRY_RUN=1 ./incacheblock_repro.sh       # print commands without running
+```
+
+Run on a GPU node. Results go to `results/incacheblock_results.csv`, which holds
+two sections — the raw per-variable timings, and the per-dataset averages:
+
+```
+# === per-variable timings (seconds) ===
+mode,dataset,variable,decomposition_s,recomposition_s
+
+# === per-dataset averages over variables (seconds) ===
+mode,dataset,num_variables,avg_decomposition_s,avg_recomposition_s
+```
+
+The full tool output is kept in `results/incacheblock_run.log`.
+
+## Hybrid hierarchy ablation
+
+`scripts/hybridhierarchy_repro.sh` sweeps six local/global refactoring-level
+configurations over all five datasets (four variables each), reporting
+decomposition and recomposition times averaged over the four variables:
+
+| Config      | `-ll` | `-gl` |
+|-------------|-------|-------|
+| `globalmax` | 0     | per dataset: NYX 9, Hurricane 7, SCALE 7, Miranda 8, S3D 9 |
+| `l1g2`      | 1     | 2     |
+| `l2g1`      | 2     | 1     |
+| `local5`    | 5     | 0     |
+| `local3`    | 3     | 0     |
+| `local1`    | 1     | 0     |
+
+Local and global times are recorded separately; whichever side a configuration
+does not use (level 0) is recorded as `0`. Every variable has its own tuned
+relative error bound, kept in the script's `EB_TABLE`.
+
+```bash
+cd scripts
+./hybridhierarchy_repro.sh                  # all configs, all datasets
+./hybridhierarchy_repro.sh NYX Miranda      # only these datasets
+CONFIG=local1 ./hybridhierarchy_repro.sh    # only one config (comma-separated ok)
+DRY_RUN=1 ./hybridhierarchy_repro.sh        # print commands without running
+```
+
+Run on a GPU node. Results go to `results/hybridhierarchy_results.csv`, again in
+two sections:
+
+```
+# === per-variable timings (seconds) ===
+config,ll,gl,dataset,variable,local_decomp_s,global_decomp_s,local_recomp_s,global_recomp_s
+
+# === per-dataset averages over variables (seconds) ===
+config,ll,gl,dataset,num_variables,avg_local_decomp_s,avg_global_decomp_s,avg_local_recomp_s,avg_global_recomp_s
+```
+
+The full tool output is kept in `results/hybridhierarchy_run.log`.
 
 <!-- ===========================================================================
      PARKED: the zfp / cuSZp baseline sections below are commented out for now

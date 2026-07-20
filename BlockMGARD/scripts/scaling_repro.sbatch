@@ -3,6 +3,7 @@
 #SBATCH --partition=chen
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:nvidia_h100_80gb_hbm3:4
 #SBATCH --mem=80G
 #SBATCH --time=04:00:00
@@ -30,7 +31,7 @@
 #
 # Usage:
 #   sbatch scaling_repro.sbatch
-#   NREP=5 sbatch scaling_repro.sbatch          # more repetitions
+#   NREP=20 sbatch scaling_repro.sbatch         # more repetitions (default 10)
 #   GPU_COUNTS="1 4" sbatch scaling_repro.sbatch # only these scale points
 #   DRY_RUN=1 ./scaling_repro.sbatch            # print commands, don't run
 #
@@ -51,7 +52,9 @@ RESULTS_FILE="${RESULTS_FILE:-$RESULTS_DIR/scaling_results.csv}"
 LOG_DIR="${LOG_DIR:-$RESULTS_DIR/scaling_logs_${SLURM_JOB_ID:-local}}"
 
 # ── Experiment settings ───────────────────────────────────────────────────
-NREP="${NREP:-3}"                       # repetitions per scale point (min taken)
+# The per-run spread was 5-16x when the job was CPU-starved, so keep the
+# repetition count high enough for the min-of-reps estimator to be stable.
+NREP="${NREP:-10}"                      # repetitions per scale point (min taken)
 GPU_COUNTS="${GPU_COUNTS:-1 2 3 4}"     # scale points to sweep
 
 # Fixed compression settings. -hh enables the hybrid (block-local) hierarchy,
@@ -117,6 +120,25 @@ run_all_datasets() {
 mkdir -p "$RESULTS_DIR" "$LOG_DIR"
 IFS=',' read -ra ALLOCATED_GPUS <<< "${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 NUM_ALLOCATED=${#ALLOCATED_GPUS[@]}
+
+# Report the actual allocation. The GPUs run concurrently but all of their
+# host-side work (file reads, H2D/D2H staging, memcpy) shares these cores, so
+# too few of them serialises the experiment and destroys the scaling numbers.
+CORES_VISIBLE=$(nproc 2>/dev/null || echo "?")
+echo "=== Allocation ==="
+echo "  Job ID:              ${SLURM_JOB_ID:-<none>}"
+echo "  Node:                $(hostname)"
+echo "  SLURM_CPUS_PER_TASK: ${SLURM_CPUS_PER_TASK:-<unset>}"
+echo "  SLURM_CPUS_ON_NODE:  ${SLURM_CPUS_ON_NODE:-<unset>}"
+echo "  Cores visible:       ${CORES_VISIBLE}"
+echo "  CPU affinity:        $(taskset -pc $$ 2>/dev/null | sed 's/.*: //' || echo '?')"
+echo "  GPUs:                ${CUDA_VISIBLE_DEVICES:-<unset>} (${NUM_ALLOCATED} allocated)"
+if [[ "$CORES_VISIBLE" =~ ^[0-9]+$ ]] && (( CORES_VISIBLE < NUM_ALLOCATED )); then
+  echo "  !! WARNING: fewer cores (${CORES_VISIBLE}) than GPUs (${NUM_ALLOCATED})." >&2
+  echo "  !! Host-side work will serialise and the scaling numbers will be invalid." >&2
+  echo "  !! Raise --cpus-per-task." >&2
+fi
+echo
 
 RAW_ROWS=()     # gpu_count,rep,gpu_slot,dataset,compress_kernel_s,decompress_kernel_s
 REP_ROWS=()     # gpu_count,rep,dataset,max_compress_kernel_s,max_decompress_kernel_s

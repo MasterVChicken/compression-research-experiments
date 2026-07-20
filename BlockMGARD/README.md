@@ -205,11 +205,17 @@ kernel time across GPUs (the slowest GPU approximates the makespan), then the
 **min** across repetitions.
 
 ```bash
-sbatch scaling_repro.sbatch                    # 1 -> 4 GPUs, 3 repetitions
-NREP=5 sbatch scaling_repro.sbatch             # more repetitions
+sbatch scaling_repro.sbatch                    # 1 -> 4 GPUs, 10 repetitions
+NREP=20 sbatch scaling_repro.sbatch            # more repetitions
 GPU_COUNTS="1 4" sbatch scaling_repro.sbatch   # only these scale points
 DRY_RUN=1 ./scaling_repro.sbatch               # print commands without running
 ```
+
+> **Allocate at least as many CPU cores as GPUs.** The GPUs run concurrently but
+> share the job's cores for all host-side work (file reads, H2D/D2H staging,
+> memcpy), so a CPU-starved job serialises and the scaling numbers become
+> meaningless. The batch header requests `--cpus-per-task=16`; the job prints
+> its actual allocation on startup and warns if there are fewer cores than GPUs.
 
 Results go to `results/scaling_results.csv`, in three sections — the raw
 per-run times, the per-repetition max across GPUs, and the final aggregate:

@@ -60,6 +60,51 @@ Run on a GPU node (the executables need CUDA). Everything is written to
 - `roi_run.log` — the full console output, including each method's compression
   ratio and BlockMGARD's ROI error-verification summary.
 
+## ROI compression-ratio comparison
+
+`scripts/roi_cr_repro.sh` compares the compression ratio BlockMGARD reaches with
+a ROI tolerance map against three uniform-error-bound baselines, on **one
+variable per dataset**:
+
+| Method | What it runs |
+|--------|--------------|
+| `blockmgard_roi` | BlockMGARD with a ROI tolerance map (`-roi -hh`, `-ll 2 -gl 3`) |
+| `mgard` | plain MGARD-X at its tuned `1e-4` relative error bound |
+| `cuzfp` | cuZFP at its tuned `1e-4` bitrate |
+| `cuszp` | cuSZp at its tuned `1e-4` absolute error bound |
+
+The baselines run at the `1e-4` level, which is closest to the ROI region's
+tolerance, so the comparison reads as "at the same ROI-region quality, whose
+compression ratio is higher". Variables: NYX `velocity_z`, Hurricane `Wf48`,
+SCALE `V`, Miranda `velocityz`, S3D `O2`.
+
+Only the compression step runs — mgard-x reports the compression ratio (and, for
+the ROI run, the block-wise ROI verification) during `-z`.
+
+```bash
+cd scripts
+./roi_cr_repro.sh                                  # all datasets, all methods
+./roi_cr_repro.sh NYX Miranda                      # only these datasets
+METHODS="blockmgard_roi cuzfp" ./roi_cr_repro.sh   # only these methods
+DRY_RUN=1 ./roi_cr_repro.sh                        # print commands without running
+```
+
+Run on a GPU node. Results go to `results/roi_cr_results.csv`:
+
+```
+dataset,variable,method,error_level,compression_ratio
+NYX,velocity_z.f32,blockmgard_roi,roi,14.81
+NYX,velocity_z.f32,mgard,1e-4,...
+NYX,velocity_z.f32,cuzfp,1e-4,...
+NYX,velocity_z.f32,cuszp,1e-4,...
+```
+
+ROI maps and intermediate compressed streams go to `WORK_DIR` (default
+`/home/leonli/ROITest/roi_cr_work`); the full tool output is kept in
+`results/roi_cr_run.log`. The console also reports the ROI block-violation count
+for each `blockmgard_roi` run, so a mis-applied tolerance map is visible
+immediately.
+
 ## Local vs. global quantization ablation
 
 `scripts/incacheblock_repro.sh` compares two hierarchy configurations at a fixed
@@ -139,6 +184,50 @@ config,ll,gl,dataset,variable,compression_ratio
 ```
 
 The full tool output is kept in `results/hybridhierarchy_run.log`.
+
+## Weak-scaling experiment
+
+`scripts/scaling_repro.sbatch` is a SLURM batch job that measures weak scaling on
+a single node from 1 to 4 GPUs, using the `l1g2` configuration (`-ll 1 -gl 2`).
+
+Each GPU independently compresses the **same full set of datasets**, so per-GPU
+work stays constant while total work grows with the GPU count — ideal weak
+scaling is a flat curve, and any rise exposes contention for shared resources
+(host memory bandwidth, PCIe, page cache, CPU). The processes do not
+communicate; each is pinned to one GPU via `CUDA_VISIBLE_DEVICES`.
+
+Datasets (one variable each): `NYX_temperature`, `Hurricane_Pf48`, `SCALE_PRES`,
+`Miranda_density`, `S3D_O2`.
+
+Methodology per scale point: a warm-up pass (all datasets on every allocated GPU,
+results discarded), then `NREP` repetitions. Per dataset it takes the **max**
+kernel time across GPUs (the slowest GPU approximates the makespan), then the
+**min** across repetitions.
+
+```bash
+sbatch scaling_repro.sbatch                    # 1 -> 4 GPUs, 3 repetitions
+NREP=5 sbatch scaling_repro.sbatch             # more repetitions
+GPU_COUNTS="1 4" sbatch scaling_repro.sbatch   # only these scale points
+DRY_RUN=1 ./scaling_repro.sbatch               # print commands without running
+```
+
+Results go to `results/scaling_results.csv`, in three sections — the raw
+per-run times, the per-repetition max across GPUs, and the final aggregate:
+
+```
+# === per-run kernel times (seconds) ===
+gpu_count,rep,gpu_slot,dataset,compress_kernel_s,decompress_kernel_s
+
+# === per-repetition max across GPUs (seconds) ===
+gpu_count,rep,dataset,max_compress_kernel_s,max_decompress_kernel_s
+
+# === final: min across repetitions of max across GPUs (seconds) ===
+gpu_count,dataset,min_max_compress_kernel_s,min_max_decompress_kernel_s
+```
+
+Values that could not be parsed are recorded as `NA` (never as `0`) and are
+excluded from the aggregates; the job prints a warning and a failure count.
+Per-run logs are kept under `results/scaling_logs_<jobid>/`.
 
 <!-- ===========================================================================
      PARKED: the zfp / cuSZp baseline sections below are commented out for now

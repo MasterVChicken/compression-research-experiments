@@ -235,6 +235,59 @@ Values that could not be parsed are recorded as `NA` (never as `0`) and are
 excluded from the aggregates; the job prints a warning and a failure count.
 Per-run logs are kept under `results/scaling_logs_<jobid>/`.
 
+## I/O breakdown (compress + parallel I/O)
+
+`scripts/io_repro.sbatch` measures the full **compress → ADIOS2 write → ADIOS2
+read → decompress** pipeline on 4 H100 GPUs and reports the four times, averaged
+over the four variables of each dataset (reproduces the paper's Fig. 11). Weak
+scaling: each GPU independently processes the full variable via `mpirun -n N`.
+
+Methods: `none` (Org.), `nvcomp_lz4` (LL, lossless), and cuSZp / cuZFP /
+BlockMGARD at `1e-2 / 1e-4 / 1e-6` (cuZFP uses fixed bitrates 4/8/16 bpv). Each
+method's write bar is `compress + write_io`, its read bar is `read_io +
+decompress`, compared against the `none` baseline — compression wins when its
+total falls below `none`.
+
+**Compression/decompression are timed kernel-only** (data assumed on GPU,
+transfers excluded), matching the paper; write/read are real ADIOS2 BP I/O. See
+`io_bench/README.md` for why (and for the other non-obvious bench choices).
+
+### Build the benchmark (one-time)
+
+```bash
+cd io_bench
+./build.sh            # -> io_bench/build/adios_io_bench
+```
+
+The benchmark source lives in `io_bench/` and needs CUDA / MPI / ADIOS2 /
+MGARD-X / zfp / cuSZp / nvcomp. `io_repro.sbatch` points `BENCH_EXEC` at
+`io_bench/build/adios_io_bench` by default (override with `BENCH_EXEC=...`).
+
+### Run
+
+```bash
+cd scripts
+sbatch io_repro.sbatch                       # all 5 datasets, 4 GPUs
+DATASETS="NYX Miranda" sbatch io_repro.sbatch  # subset of datasets
+GPU_COUNT=1 sbatch io_repro.sbatch           # fewer GPUs
+DRY_RUN=1 ./io_repro.sbatch                  # print commands without running
+```
+
+Datasets (four variables each): `NYX  Hurricane  SCALE  Miranda  S3D`.
+Results go to `results/io_results.csv`, in two sections — the raw per-variable
+timings and the per-dataset averages used for the figure:
+
+```
+# === Fig 11: averaged over the four variables per dataset ===
+dataset,method,level,compress_s,write_io_s,decompress_s,read_io_s,num_vars
+NYX,none,org,...
+NYX,mgard,1e-2,...
+```
+
+Large `.bp` scratch files go to `SCRATCH_DIR` (default
+`/gpfs/projects/cdux/leonli/io_tmp`), not the repo; failed runs are recorded as
+`NA`, never `0`.
+
 <!-- ===========================================================================
      PARKED: the zfp / cuSZp baseline sections below are commented out for now
      because those results are not used yet. Uncomment when they are needed.

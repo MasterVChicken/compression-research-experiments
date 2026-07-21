@@ -28,3 +28,6 @@ results/
 .DS_Store
 *.swp
 __pycache__/
+# --- SLURM job logs ---
+*.out
+*.err

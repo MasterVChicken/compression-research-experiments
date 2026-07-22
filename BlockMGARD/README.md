@@ -27,83 +27,6 @@ Requires CUDA + CMake. MGARD is currently tested with the Hopper arch via
 `build_mgard_cuda_hopper.sh`; override the build job count with `MGARD_JOBS`
 (default 32).
 
-## ROI visualization experiments
-
-`scripts/roi_repro.sh` produces the decompressed (`.dec`) outputs used for
-the ROI visualization figures, for all three methods (BlockMGARD, cuZFP, cuSZp),
-for both experiments:
-
-- `same_quality` — fix visual quality, compare compression ratio (SCALE/PRES)
-- `same_cr` — fix compression ratio (~50), compare visual quality (Miranda/density)
-
-Only BlockMGARD uses the ROI tolerance map (built on demand by
-`roi_generator/ROIGenerator.cpp`, compiled automatically); the two baselines use
-a uniform error bound tuned to match BlockMGARD's operating point.
-
-```bash
-cd scripts
-./roi_repro.sh                 # both experiments, all methods
-./roi_repro.sh same_cr         # one experiment (same_quality | same_cr)
-DRY_RUN=1 ./roi_repro.sh       # print commands without running
-VERBOSE=1 ./roi_repro.sh       # show tool output live (else it goes to the log)
-OUT_DIR=/path ./roi_repro.sh   # where .dec / maps / compressed go
-```
-
-Run on a GPU node (the executables need CUDA). Everything is written to
-`OUT_DIR` (default `/home/leonli/ROITest/roi_results`):
-
-- one decompressed `.dec` per method and experiment, e.g.
-  `blockmgard_scale_pres.dec`, `zfp_scale_pres.dec`, `cuszp_scale_pres.dec`
-  (and the `*_miranda_density.dec` set for `same_cr`) — these are the inputs to
-  the visualization;
-- the ROI tolerance maps and intermediate compressed streams;
-- `roi_run.log` — the full console output, including each method's compression
-  ratio and BlockMGARD's ROI error-verification summary.
-
-## ROI compression-ratio comparison
-
-`scripts/roi_cr_repro.sh` compares the compression ratio BlockMGARD reaches with
-a ROI tolerance map against three uniform-error-bound baselines, on **one
-variable per dataset**:
-
-| Method | What it runs |
-|--------|--------------|
-| `blockmgard_roi` | BlockMGARD with a ROI tolerance map (`-roi -hh`, `-ll 2 -gl 3`) |
-| `mgard` | plain MGARD-X at its tuned `1e-4` relative error bound |
-| `cuzfp` | cuZFP at its tuned `1e-4` bitrate |
-| `cuszp` | cuSZp at its tuned `1e-4` absolute error bound |
-
-The baselines run at the `1e-4` level, which is closest to the ROI region's
-tolerance, so the comparison reads as "at the same ROI-region quality, whose
-compression ratio is higher". Variables: NYX `velocity_z`, Hurricane `Wf48`,
-SCALE `V`, Miranda `velocityz`, S3D `O2`.
-
-Only the compression step runs — mgard-x reports the compression ratio (and, for
-the ROI run, the block-wise ROI verification) during `-z`.
-
-```bash
-cd scripts
-./roi_cr_repro.sh                                  # all datasets, all methods
-./roi_cr_repro.sh NYX Miranda                      # only these datasets
-METHODS="blockmgard_roi cuzfp" ./roi_cr_repro.sh   # only these methods
-DRY_RUN=1 ./roi_cr_repro.sh                        # print commands without running
-```
-
-Run on a GPU node. Results go to `results/roi_cr_results.csv`:
-
-```
-dataset,variable,method,error_level,compression_ratio
-NYX,velocity_z.f32,blockmgard_roi,roi,14.81
-NYX,velocity_z.f32,mgard,1e-4,...
-NYX,velocity_z.f32,cuzfp,1e-4,...
-NYX,velocity_z.f32,cuszp,1e-4,...
-```
-
-ROI maps and intermediate compressed streams go to `WORK_DIR` (default
-`/home/leonli/ROITest/roi_cr_work`); the full tool output is kept in
-`results/roi_cr_run.log`. The console also reports the ROI block-violation count
-for each `blockmgard_roi` run, so a mis-applied tolerance map is visible
-immediately.
 
 ## Local vs. global quantization ablation
 
@@ -184,6 +107,121 @@ config,ll,gl,dataset,variable,compression_ratio
 ```
 
 The full tool output is kept in `results/hybridhierarchy_run.log`.
+
+## MGARD-X vs. BlockMGARD (throughput & CR)
+
+`scripts/compression_repro.sh` compares plain **MGARD-X** against **BlockMGARD**
+on compression throughput, decompression throughput and compression ratio, over
+all five datasets at three error levels, averaged over the four variables of
+each dataset (reproduces the paper's Table II).
+
+- **M-X** — plain MGARD-X (MultiDim), tuned error bounds from `mgard_comp.sh`.
+- **BM** — BlockMGARD (hybrid, `-hh -ll 1 -gl 2`), tuned bounds from
+  `block_mgard_comp.sh`.
+
+Both use tuned relative bounds chosen so the *achieved* error is 1e-2 / 1e-4 /
+1e-6 (MGARD's `-e` is a bound in its own norm, so the input values look larger
+than the achieved error). Throughput is the kernel-level "Compress/Decompress
+pipeline" figure MGARD reports (decompose + quantize + lossless, excluding
+host↔device transfer); CR is the reported compression ratio.
+
+```bash
+cd scripts
+./compression_repro.sh                 # all datasets, all levels
+./compression_repro.sh NYX Miranda     # only these datasets
+LEVEL=1e-4 ./compression_repro.sh      # only one level (1e-2 | 1e-4 | 1e-6)
+DRY_RUN=1 ./compression_repro.sh       # print commands without running
+```
+
+Run on a GPU node (single GPU; uses the `mgard-x` CLI directly, no MPI).
+Results go to `results/compression_results.csv`, in two sections — the raw
+per-variable numbers and the Table II layout (M-X and BM side by side):
+
+```
+# === Table II: averaged over the four variables (M-X vs BM) ===
+dataset,level,comp_MX_gbs,comp_BM_gbs,decomp_MX_gbs,decomp_BM_gbs,CR_MX,CR_BM
+NYX,1e-2,...
+```
+
+
+## ROI visualization experiments
+
+`scripts/roi_repro.sh` produces the decompressed (`.dec`) outputs used for
+the ROI visualization figures, for all three methods (BlockMGARD, cuZFP, cuSZp),
+for both experiments:
+
+- `same_quality` — fix visual quality, compare compression ratio (SCALE/PRES)
+- `same_cr` — fix compression ratio (~50), compare visual quality (Miranda/density)
+
+Only BlockMGARD uses the ROI tolerance map (built on demand by
+`roi_generator/ROIGenerator.cpp`, compiled automatically); the two baselines use
+a uniform error bound tuned to match BlockMGARD's operating point.
+
+```bash
+cd scripts
+./roi_repro.sh                 # both experiments, all methods
+./roi_repro.sh same_cr         # one experiment (same_quality | same_cr)
+DRY_RUN=1 ./roi_repro.sh       # print commands without running
+VERBOSE=1 ./roi_repro.sh       # show tool output live (else it goes to the log)
+OUT_DIR=/path ./roi_repro.sh   # where .dec / maps / compressed go
+```
+
+Run on a GPU node (the executables need CUDA). Everything is written to
+`OUT_DIR` (default `/home/leonli/ROITest/roi_results`):
+
+- one decompressed `.dec` per method and experiment, e.g.
+  `blockmgard_scale_pres.dec`, `zfp_scale_pres.dec`, `cuszp_scale_pres.dec`
+  (and the `*_miranda_density.dec` set for `same_cr`) — these are the inputs to
+  the visualization;
+- the ROI tolerance maps and intermediate compressed streams;
+- `roi_run.log` — the full console output, including each method's compression
+  ratio and BlockMGARD's ROI error-verification summary.
+
+## ROI compression-ratio comparison
+
+`scripts/roi_cr_repro.sh` compares the compression ratio BlockMGARD reaches with
+a ROI tolerance map against three uniform-error-bound baselines, on **one
+variable per dataset**:
+
+| Method | What it runs |
+|--------|--------------|
+| `blockmgard_roi` | BlockMGARD with a ROI tolerance map (`-roi -hh`, `-ll 2 -gl 3`) |
+| `mgard` | plain MGARD-X at its tuned `1e-4` relative error bound |
+| `cuzfp` | cuZFP at its tuned `1e-4` bitrate |
+| `cuszp` | cuSZp at its tuned `1e-4` absolute error bound |
+
+The baselines run at the `1e-4` level, which is closest to the ROI region's
+tolerance, so the comparison reads as "at the same ROI-region quality, whose
+compression ratio is higher". Variables: NYX `velocity_z`, Hurricane `Wf48`,
+SCALE `V`, Miranda `velocityz`, S3D `O2`.
+
+Only the compression step runs — mgard-x reports the compression ratio (and, for
+the ROI run, the block-wise ROI verification) during `-z`.
+
+```bash
+cd scripts
+./roi_cr_repro.sh                                  # all datasets, all methods
+./roi_cr_repro.sh NYX Miranda                      # only these datasets
+METHODS="blockmgard_roi cuzfp" ./roi_cr_repro.sh   # only these methods
+DRY_RUN=1 ./roi_cr_repro.sh                        # print commands without running
+```
+
+Run on a GPU node. Results go to `results/roi_cr_results.csv`:
+
+```
+dataset,variable,method,error_level,compression_ratio
+NYX,velocity_z.f32,blockmgard_roi,roi,14.81
+NYX,velocity_z.f32,mgard,1e-4,...
+NYX,velocity_z.f32,cuzfp,1e-4,...
+NYX,velocity_z.f32,cuszp,1e-4,...
+```
+
+ROI maps and intermediate compressed streams go to `WORK_DIR` (default
+`/home/leonli/ROITest/roi_cr_work`); the full tool output is kept in
+`results/roi_cr_run.log`. The console also reports the ROI block-violation count
+for each `blockmgard_roi` run, so a mis-applied tolerance map is visible
+immediately.
+
 
 ## Weak-scaling experiment
 

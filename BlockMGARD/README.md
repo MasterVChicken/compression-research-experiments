@@ -97,14 +97,41 @@ decomposition and recomposition times averaged over the four variables:
 | `local1`    | 1     | 0     |
 
 Local and global times are recorded separately; whichever side a configuration
-does not use (level 0) is recorded as `0`. Every variable has its own tuned
-relative error bound, kept in the script's `EB_TABLE`.
+does not use (level 0) is recorded as `0`. A side the configuration **does** use
+but whose timer could not be parsed is recorded as `NA`, never `0`, and is
+excluded from the averages — the two cases look identical in a `0` and one of
+them is a silent data loss. Every variable has its own tuned relative error
+bound, kept in the script's `EB_TABLE`.
+
+**The script runs MGARD with kernel fusion disabled** (it passes `-nkf` /
+`--no-kernel-fusion`). MGARD fuses quantization into the local
+decompose/recompose kernels by default and reports each pair as one
+`Local Decomposition+Quantization (fused)` figure, while the global side always
+reports `Global Decomposition` and `Quantization` separately. Every row of this
+CSV puts a local time next to a global one, so with fusion on the two halves of
+a row would not be measuring the same thing. Unfused, both are decomposition
+alone; reconstruction is identical either way. `FUSED=1` drops the flag and
+parses the fused timer names instead.
+
+Because of that, **these numbers are not BlockMGARD's headline performance** —
+they are a like-for-like comparison of two hierarchy configurations with the
+kernel-fusion optimisation deliberately switched off. Fused (the default outside
+this script) is substantially faster.
+
+The script first runs the whole selection once as a **warm-up and discards it**,
+then measures. The first run of a configuration is intermittently inflated by
+one to two orders of magnitude and looks like an ordinary measurement; unwarmed,
+one such run skewed a per-dataset average by 20x. It is worse here than in the
+other scripts because a poisoned local time lands in a row beside a healthy
+global one. `WARMUP=0` skips the pass, roughly halving the runtime at that risk.
 
 ```bash
 cd scripts
 ./hybridhierarchy_repro.sh                  # all configs, all datasets
 ./hybridhierarchy_repro.sh NYX Miranda      # only these datasets
 CONFIG=local1 ./hybridhierarchy_repro.sh    # only one config (comma-separated ok)
+FUSED=1 ./hybridhierarchy_repro.sh          # MGARD's default fused kernels instead
+WARMUP=0 ./hybridhierarchy_repro.sh         # skip the warm-up pass (faster, riskier)
 DRY_RUN=1 ./hybridhierarchy_repro.sh        # print commands without running
 ```
 
@@ -125,6 +152,13 @@ one row per variable (not averaged):
 ```
 config,ll,gl,dataset,variable,compression_ratio
 ```
+
+> `num_variables` counts the rows in the group, not the values that went into
+> each average. Where a variable contributed `NA` to a column, that column's
+> mean is over fewer variables than the count suggests. This is not rare: when
+> a configuration cannot compress a variable, MGARD falls back to storing it
+> uncompressed (compression ratio 1.0) and never runs the recomposition
+> kernels, so there is no recomposition time to report.
 
 The full tool output is kept in `results/hybridhierarchy_run.log`.
 

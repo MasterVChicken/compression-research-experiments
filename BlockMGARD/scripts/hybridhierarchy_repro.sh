@@ -35,6 +35,18 @@ MGARD_INSTALL=/home/leonli/MGARD/install-cuda-hopper
 EXEC=${MGARD_INSTALL}/bin/mgard-x
 export LD_LIBRARY_PATH="${MGARD_INSTALL}/lib64:${MGARD_INSTALL}/lib:${LD_LIBRARY_PATH:-}"
 
+# ── Kernel fusion OFF ─────────────────────────────────────────────────────
+# MGARD fuses quantization into the LOCAL decompose/recompose kernels by
+# default and reports each pair as one "Local Decomposition+Quantization
+# (fused)" figure. The GLOBAL side is never fused — it reports "Global
+# Decomposition" and "Quantization" separately. Every configuration here puts
+# the local and global times side by side in one CSV row, so with fusion on
+# the two halves of a row would not be measuring the same thing. Pass -nkf so
+# both report decomposition alone. Reconstruction is identical either way.
+# FUSED=1 drops the flag and measures MGARD's default fused kernels instead.
+FUSION_FLAG="-nkf"
+if [[ -n "${FUSED:-}" ]]; then FUSION_FLAG=""; fi
+
 SDR_ROOT=/home/leonli/SDRBENCH
 OUT_DATA=/home/leonli/ROITest/compressed.dat     # scratch (overwritten each run)
 
@@ -174,15 +186,21 @@ ebs_for() {
   return 1
 }
 
+# run_one <config> <dataset> <variable> <error-bound> <ll> <gl> [record]
+# record=0 runs the identical command as a warm-up: no log, no parse, no row.
 run_one() {
-  local cfg=$1 ds=$2 var=$3 eb=$4 ll=$5 gl=$6
+  local cfg=$1 ds=$2 var=$3 eb=$4 ll=$5 gl=$6 record=${7:-1}
   local in_data="${SDR_ROOT}/${DS_DIR[$ds]}/${var}"
   local dt="${DS_DTYPE[$ds]}"
   local dims="${DS_DIMS[$ds]}"
 
-  echo "=== [${cfg}] ${ds} / ${var}  (-ll ${ll} -gl ${gl}, e=${eb}) ==="
+  if (( record )); then
+    echo "=== [${cfg}] ${ds} / ${var}  (-ll ${ll} -gl ${gl}, e=${eb}) ==="
+  else
+    echo "  warm-up [${cfg}] ${ds} / ${var}"
+  fi
   local cmd=("$EXEC" -z -i "$in_data" -o "$OUT_DATA" -dt "$dt" -dim 3 $dims \
-             -em "$ERR_MODE" -e "$eb" $FIXED_FLAGS -ll "$ll" -gl "$gl")
+             -em "$ERR_MODE" -e "$eb" $FIXED_FLAGS -ll "$ll" -gl "$gl" $FUSION_FLAG)
 
   if [[ -n "${DRY_RUN:-}" ]]; then
     printf '  '; printf '%q ' "${cmd[@]}"; echo
@@ -199,15 +217,36 @@ run_one() {
     echo "  !! command failed — see $RUN_LOG" >&2
     return 1
   }
+  (( record )) || return 0
   printf '%s\n' "$out" >>"$RUN_LOG"
 
-  # "[time] Local Decomposition: 0.004355 s (129.610372 GB/s)" -> field 4.
-  # A side the config does not use emits no line; record it as 0.
+  # "[time] Local Decomposition: 0.004355 s (129.610372 GB/s)" -> the value
+  # before the " s". Matched as a literal prefix (index(), not a regex) so the
+  # parentheses in the fused timer names need no escaping. Only the LOCAL side
+  # is ever fused. The names are pinned to the fusion state rather than
+  # accepting either spelling, so a mismatch yields NA — a visible failure —
+  # instead of a number that silently includes quantization.
+  local dsuf="" rsuf=""
+  if [[ -n "${FUSED:-}" ]]; then
+    dsuf="+Quantization (fused)"
+    rsuf="+Dequantization (fused)"
+  fi
+
+  timer() { awk -v P="$1" 'index($0, P) == 1 {
+              for (i = 1; i <= NF; i++) if ($i == "s") { print $(i-1); exit }
+            }' <<<"$out"; }
+
   local ldec gdec lrec grec cr
-  ldec=$(awk '/\[time\] Local Decomposition:/{print $4; exit}'    <<<"$out")
-  gdec=$(awk '/\[time\] Global Decomposition:/{print $4; exit}'   <<<"$out")
-  lrec=$(awk '/\[time\] Local Recomposition:/{print $4; exit}'    <<<"$out")
-  grec=$(awk '/\[time\] Global Recomposition:/{print $4; exit}'   <<<"$out")
+  ldec=$(timer "[time] Local Decomposition${dsuf}:")
+  gdec=$(timer "[time] Global Decomposition:")
+  lrec=$(timer "[time] Local Recomposition${rsuf}:")
+  grec=$(timer "[time] Global Recomposition:")
+
+  # A side the config does not use emits no line; record it as 0. A side the
+  # config DOES use but that did not parse is a failure, not a zero — record
+  # NA so it is excluded from the averages instead of dragging them down.
+  if (( ll > 0 )); then ldec="${ldec:-NA}"; lrec="${lrec:-NA}"; fi
+  if (( gl > 0 )); then gdec="${gdec:-NA}"; grec="${grec:-NA}"; fi
   # "[info] Compression ratio: 28.3488" -> last field
   cr=$(awk '/\[info\] Compression ratio:/{print $NF; exit}'       <<<"$out")
 
@@ -220,33 +259,68 @@ run_one() {
 mkdir -p "$RESULTS_DIR"
 [[ -z "${DRY_RUN:-}" ]] && : > "$RUN_LOG"
 
+if [[ -n "$FUSION_FLAG" ]]; then
+  echo "Kernel fusion: OFF (${FUSION_FLAG}) — local and global times are both decomposition only"
+else
+  echo "Kernel fusion: ON — local times INCLUDE quantization, global times do not" >&2
+fi
+
+# Validate the whole selection before running anything, so a typo fails now
+# rather than after the warm-up has already burned several minutes.
 for cfg in "${SELECTED_CONFIGS[@]}"; do
-  echo "########## Config: ${cfg} ##########"
   for ds in "${SELECTED_DATASETS[@]}"; do
     if [[ -z "${DS_DIR[$ds]:-}" ]]; then
       echo "unknown dataset: $ds (valid: ${DATASET_ORDER[*]})" >&2
       exit 1
     fi
-
-    local_levels=$(levels_for "$cfg" "$ds")
-    if [[ -z "$local_levels" ]]; then
+    if [[ -z "$(levels_for "$cfg" "$ds")" ]]; then
       echo "unknown config: $cfg (valid: ${CONFIG_ORDER[*]})" >&2
       exit 1
     fi
-    read -r ll gl <<< "$local_levels"
-
-    if ! ebs=$(ebs_for "$cfg" "$ds"); then
-      echo "  !! no error bounds for $cfg/$ds, skipping" >&2
-      continue
-    fi
-    read -r -a eb_arr <<< "$ebs"
-    read -r -a var_arr <<< "${DS_VARS[$ds]}"
-
-    for i in "${!var_arr[@]}"; do
-      run_one "$cfg" "$ds" "${var_arr[$i]}" "${eb_arr[$i]}" "$ll" "$gl"
-    done
   done
 done
+
+# One pass over the whole selection. record=0 discards everything it measures.
+sweep() {
+  local record=$1 cfg ds ll gl ebs local_levels i
+  for cfg in "${SELECTED_CONFIGS[@]}"; do
+    if (( record )); then echo "########## Config: ${cfg} ##########"; fi
+    for ds in "${SELECTED_DATASETS[@]}"; do
+      local_levels=$(levels_for "$cfg" "$ds")
+      read -r ll gl <<< "$local_levels"
+
+      if ! ebs=$(ebs_for "$cfg" "$ds"); then
+        if (( record )); then
+          echo "  !! no error bounds for $cfg/$ds, skipping" >&2
+        fi
+        continue
+      fi
+      local -a eb_arr var_arr
+      read -r -a eb_arr <<< "$ebs"
+      read -r -a var_arr <<< "${DS_VARS[$ds]}"
+
+      for i in "${!var_arr[@]}"; do
+        run_one "$cfg" "$ds" "${var_arr[$i]}" "${eb_arr[$i]}" "$ll" "$gl" "$record"
+      done
+    done
+  done
+}
+
+# ── Warm-up pass (results discarded) ──────────────────────────────────────
+# The first run of a configuration is intermittently inflated by one to two
+# orders of magnitude, and it looks like an ordinary measurement: nothing
+# downstream can tell it from a real one. It is worse here than elsewhere
+# because a poisoned local time lands in a row next to a healthy global one.
+# So run the full selection once and throw it away, as scaling_repro.sbatch
+# does. WARMUP=0 skips the pass, roughly halving the runtime at that risk.
+if [[ -z "${DRY_RUN:-}" && "${WARMUP:-1}" != "0" ]]; then
+  echo "########## Warm-up pass (results discarded) ##########"
+  sweep 0
+  echo "Warm-up complete."
+  echo
+fi
+
+sweep 1
 
 # ── Flush: raw rows + per-dataset averages over the four variables ────────
 if [[ -z "${DRY_RUN:-}" ]]; then
@@ -259,16 +333,26 @@ if [[ -z "${DRY_RUN:-}" ]]; then
     echo "config,ll,gl,dataset,num_variables,avg_local_decomp_s,avg_global_decomp_s,avg_local_recomp_s,avg_global_recomp_s"
     if ((${#RAW_ROWS[@]})); then
       printf '%s\n' "${RAW_ROWS[@]}" | awk -F, '
+        # NA marks a parse failure. Averaging it would let awk coerce it to 0
+        # and drag the mean down, so count only the values that parsed.
+        function acc(col, key, v) {
+          if (v ~ /^-?[0-9.]+([eE][-+]?[0-9]+)?$/) { sum[col, key] += v; cnt[col, key]++ }
+        }
+        function avg(col, key) {
+          return cnt[col, key] > 0 ? sprintf("%.6f", sum[col, key] / cnt[col, key]) : "NA"
+        }
         {
           key = $1 "," $2 "," $3 "," $4          # config,ll,gl,dataset
           if (!(key in n)) order[++k] = key
-          n[key]++; ld[key] += $6; gd[key] += $7; lr[key] += $8; gr[key] += $9
+          n[key]++
+          acc("ld", key, $6); acc("gd", key, $7)
+          acc("lr", key, $8); acc("gr", key, $9)
         }
         END {
           for (i = 1; i <= k; i++) {
             key = order[i]
-            printf "%s,%d,%.6f,%.6f,%.6f,%.6f\n", key, n[key],
-                   ld[key]/n[key], gd[key]/n[key], lr[key]/n[key], gr[key]/n[key]
+            printf "%s,%d,%s,%s,%s,%s\n", key, n[key],
+                   avg("ld", key), avg("gd", key), avg("lr", key), avg("gr", key)
           }
         }'
     fi

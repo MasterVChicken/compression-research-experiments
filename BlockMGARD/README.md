@@ -170,32 +170,90 @@ all five datasets at three error levels, averaged over the four variables of
 each dataset (reproduces the paper's Table II).
 
 - **M-X** — plain MGARD-X (MultiDim), tuned error bounds from `mgard_comp.sh`.
-- **BM** — BlockMGARD (hybrid, `-hh -ll 1 -gl 2`), tuned bounds from
-  `block_mgard_comp.sh`.
+- **BM** — BlockMGARD (hybrid, `-hh -ll 1 -gl 2`), kernel fusion off, tuned
+  bounds from `block_mgard_comp.sh`.
+- **BMF** — the same BlockMGARD configuration and bounds with kernel fusion on,
+  which is MGARD's default.
 
-Both use tuned relative bounds chosen so the *achieved* error is 1e-2 / 1e-4 /
-1e-6 (MGARD's `-e` is a bound in its own norm, so the input values look larger
-than the achieved error). Throughput is the kernel-level "Compress/Decompress
-pipeline" figure MGARD reports (decompose + quantize + lossless, excluding
-host↔device transfer); CR is the reported compression ratio.
+BM and BMF differ only in whether the local decompose/recompose kernels are
+fused with quantization. Fusion is a pure performance transformation: both
+reach the same error and the same compression ratio, so `CR_BM` and `CR_BMF`
+are a cross-check on each other and the throughput columns are where the two
+part.
+
+### Two builds
+
+**M-X runs a different binary from BM and BMF.** M-X is the stock MGARD-X
+baseline — the timing-instrumented 1.6.0 fork that `install_baselines.sh`
+builds, the same binary `roi_cr_repro.sh` uses for its `mgard` baseline. BM and
+BMF run our BlockMGARD build. Running M-X out of our own build would compare
+BlockMGARD against a plain path our branch has itself modified, which is not
+the baseline the comparison is about. Override with `BASELINE_INSTALL=` /
+`BLOCKMGARD_INSTALL=`.
+
+All three use tuned relative bounds chosen so the *achieved* error is
+1e-2 / 1e-4 / 1e-6 (MGARD's `-e` is a bound in its own norm, so the input
+values look larger than the achieved error). The run log records the achieved
+error of every run, which is worth checking: the comparison only means anything
+if all three modes land on the level in the label.
+
+### What is timed
+
+The **kernel stage** — decompose + quantize + lossless on the way in and its
+inverse on the way out — reported by MGARD as `Compression Kernel` /
+`Decompression Kernel`. The two builds spell it differently (the baseline
+writes `<Name> time: <s>` with throughput on its own line, ours writes
+`<Name>: <s> (<N> GB/s)`), so the script keeps a timer name per mode.
+
+Deliberately **not** the `low-level` or `high-level` timers: those add the
+per-subdomain prefetch layer and, in the baseline, a `Calculate norm` that
+takes 10 ms against our build's 0.2 ms. Comparing across two builds is only
+meaningful on the stage both measure the same way. Also not the
+`Compress pipeline` figure this script used to take, which includes the hybrid
+path's per-call hierarchy construction and so measures a pipeline property
+rather than kernel throughput.
+
+Neither kernel timer prints a throughput, so the script derives it as
+uncompressed bytes / seconds — the definition MGARD uses for the figures it
+does print. The per-variable section keeps both the seconds and the GB/s.
+
+The script first runs the whole selection once as a **warm-up and discards it**,
+then measures; `WARMUP=0` skips the pass. See the in-cache-block section above
+for why.
 
 ```bash
 cd scripts
 ./compression_repro.sh                 # all datasets, all levels
 ./compression_repro.sh NYX Miranda     # only these datasets
 LEVEL=1e-4 ./compression_repro.sh      # only one level (1e-2 | 1e-4 | 1e-6)
+WARMUP=0 ./compression_repro.sh        # skip the warm-up pass (faster, riskier)
 DRY_RUN=1 ./compression_repro.sh       # print commands without running
 ```
 
 Run on a GPU node (single GPU; uses the `mgard-x` CLI directly, no MPI).
 Results go to `results/compression_results.csv`, in two sections — the raw
-per-variable numbers and the Table II layout (M-X and BM side by side):
+per-variable numbers and the Table II layout (the three modes side by side):
 
 ```
-# === Table II: averaged over the four variables (M-X vs BM) ===
-dataset,level,comp_MX_gbs,comp_BM_gbs,decomp_MX_gbs,decomp_BM_gbs,CR_MX,CR_BM
+# === per-variable (kernel seconds, throughput GB/s, CR) ===
+dataset,variable,mode,level,comp_s,comp_gbs,decomp_s,decomp_gbs,cr
+
+# === Table II: averaged over the four variables (M-X vs BM vs BMF) ===
+dataset,level,comp_MX_gbs,comp_BM_gbs,comp_BMF_gbs,decomp_MX_gbs,decomp_BM_gbs,decomp_BMF_gbs,CR_MX,CR_BM,CR_BMF
 NYX,1e-2,...
 ```
+
+Each column is averaged over whatever parsed: a run whose timer could not be
+read still contributes its compression ratio, and a column with nothing to
+average is `NA`, never `0`.
+
+> One case produces `NA` routinely rather than as a failure. When a
+> configuration cannot compress a variable, MGARD stores it uncompressed
+> (compression ratio 1.0) and never runs the decompression kernels, so there is
+> no `Decompression Kernel` time to report. That variable drops out of the
+> decompression columns for its row, which are then averaged over fewer than
+> four variables — check the per-variable section before quoting a
+> decompression figure at the tightest error level, where this is most likely.
 
 
 ## ROI visualization experiments

@@ -40,13 +40,33 @@ For each run it extracts the decomposition and recomposition times matching the
 mode (`Local *` for the local runs, `Global *` for the global runs) and averages
 them over the four variables of each dataset.
 
+**The script runs MGARD with kernel fusion disabled** (it passes `-nkf` /
+`--no-kernel-fusion`). MGARD fuses quantization into the local
+decompose/recompose kernels by default and reports the pair as one
+`Local Decomposition+Quantization (fused)` figure, while the global side always
+reports `Global Decomposition` and `Quantization` separately — so with fusion on
+the two modes would not be measuring the same thing. Unfused, both report
+decomposition alone; reconstruction is identical either way. `FUSED=1` drops the
+flag and parses the fused timer names instead, for A/B-ing the fused kernels
+themselves.
+
 ```bash
 cd scripts
 ./incacheblock_repro.sh                 # both modes, all datasets
 ./incacheblock_repro.sh NYX Miranda     # only these datasets
 MODE=local ./incacheblock_repro.sh      # only one mode (local | global)
+FUSED=1 ./incacheblock_repro.sh         # MGARD's default fused kernels instead
+WARMUP=0 ./incacheblock_repro.sh        # skip the warm-up pass (faster, riskier)
 DRY_RUN=1 ./incacheblock_repro.sh       # print commands without running
 ```
+
+The script first runs the whole selection once as a **warm-up and discards it**,
+then measures. The first run of a configuration is intermittently inflated — a
+`Global Decomposition` measured at 1.0 GB/s where the next three variables of
+the same dataset give 79 GB/s — and because it is a plausible-looking number
+nothing downstream can distinguish it from a real measurement; unwarmed, it
+skewed a per-dataset average by 20x. `WARMUP=0` skips the pass and roughly
+halves the runtime, at that risk.
 
 Run on a GPU node. Results go to `results/incacheblock_results.csv`, which holds
 two sections — the raw per-variable timings, and the per-dataset averages:

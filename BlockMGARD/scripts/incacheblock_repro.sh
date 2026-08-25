@@ -28,6 +28,18 @@ MGARD_INSTALL=/home/leonli/MGARD/install-cuda-hopper
 EXEC=${MGARD_INSTALL}/bin/mgard-x
 export LD_LIBRARY_PATH="${MGARD_INSTALL}/lib64:${MGARD_INSTALL}/lib:${LD_LIBRARY_PATH:-}"
 
+# ── Kernel fusion OFF (default for this ablation) ─────────────────────────
+# MGARD fuses quantization into the LOCAL decompose/recompose kernels by
+# default and reports the pair as a single "Local Decomposition+Quantization
+# (fused)" figure. The GLOBAL side is never fused — it reports "Global
+# Decomposition" and "Quantization" separately. With fusion left on, the two
+# modes of this ablation would compare a local time that includes quantization
+# against a global time that does not. Pass -nkf so both report decomposition
+# alone. Reconstruction is identical either way. FUSED=1 drops the flag and
+# measures MGARD's default fused kernels instead.
+FUSION_FLAG="-nkf"
+[[ -n "${FUSED:-}" ]] && FUSION_FLAG=""
+
 SDR_ROOT=/home/leonli/SDRBENCH
 OUT_DATA=/home/leonli/ROITest/compressed.dat     # scratch (overwritten each run)
 
@@ -92,17 +104,23 @@ RAW_ROWS=()
 # ── Helpers ───────────────────────────────────────────────────────────────
 strip_color() { sed -E 's/\x1b\[[0-9;]*m//g'; }
 
+# run_one <mode> <dataset> <variable> [record]
+# record=0 runs the identical command as a warm-up: no log, no parse, no row.
 run_one() {
-  local mode=$1 ds=$2 var=$3
+  local mode=$1 ds=$2 var=$3 record=${4:-1}
   local in_data="${SDR_ROOT}/${DS_DIR[$ds]}/${var}"
   local dt="${DS_DTYPE[$ds]}"
   local dims="${DS_DIMS[$ds]}"
   local levels="${MODE_LEVELS[$mode]}"
   local label="${MODE_LABEL[$mode]}"
 
-  echo "=== [${mode}] ${ds} / ${var} ==="
+  if (( record )); then
+    echo "=== [${mode}] ${ds} / ${var} ==="
+  else
+    echo "  warm-up [${mode}] ${ds} / ${var}"
+  fi
   local cmd=("$EXEC" -z -i "$in_data" -o "$OUT_DATA" -dt "$dt" -dim 3 $dims \
-             -em "$ERR_MODE" -e "$ERR_BOUND" $FIXED_FLAGS $levels)
+             -em "$ERR_MODE" -e "$ERR_BOUND" $FIXED_FLAGS $levels $FUSION_FLAG)
 
   if [[ -n "${DRY_RUN:-}" ]]; then
     printf '  '; printf '%q ' "${cmd[@]}"; echo
@@ -119,12 +137,30 @@ run_one() {
     printf '%s\n' "$out" >>"$RUN_LOG"
     return 1
   }
+  (( record )) || return 0
   printf '%s\n' "$out" >>"$RUN_LOG"
 
-  # "[time] Local Decomposition: 0.004355 s (129.610372 GB/s)" -> field 4
+  # "[time] Local Decomposition: 0.004355 s (129.610372 GB/s)" -> the value
+  # before the " s". Matched as a literal prefix (index(), not a regex) so the
+  # parentheses in the fused timer names need no escaping. Only the LOCAL side
+  # is ever fused, so the suffix applies to it alone. The name is pinned to the
+  # fusion state: a mismatch yields NA — a visible failure — instead of
+  # silently recording a number with different semantics.
+  local dsuf="" rsuf=""
+  if [[ -n "${FUSED:-}" && "$label" == "Local" ]]; then
+    dsuf="+Quantization (fused)"
+    rsuf="+Dequantization (fused)"
+  fi
+
   local dec rec
-  dec=$(awk -v L="$label" '$0 ~ ("\\[time\\] " L " Decomposition:") {print $4; exit}' <<<"$out")
-  rec=$(awk -v L="$label" '$0 ~ ("\\[time\\] " L " Recomposition:") {print $4; exit}' <<<"$out")
+  dec=$(awk -v L="$label" -v S="$dsuf" \
+        'index($0, "[time] " L " Decomposition" S ":") == 1 {
+           for (i = 1; i <= NF; i++) if ($i == "s") { print $(i-1); exit }
+         }' <<<"$out")
+  rec=$(awk -v L="$label" -v S="$rsuf" \
+        'index($0, "[time] " L " Recomposition" S ":") == 1 {
+           for (i = 1; i <= NF; i++) if ($i == "s") { print $(i-1); exit }
+         }' <<<"$out")
 
   echo "    -> ${label} decomposition=${dec:-NA}s  recomposition=${rec:-NA}s"
   RAW_ROWS+=("$mode,$ds,$var,${dec:-NA},${rec:-NA}")
@@ -134,17 +170,51 @@ run_one() {
 mkdir -p "$RESULTS_DIR"
 [[ -z "${DRY_RUN:-}" ]] && : > "$RUN_LOG"
 
+if [[ -n "$FUSION_FLAG" ]]; then
+  echo "Kernel fusion: OFF (${FUSION_FLAG}) — local times are decomposition only (comparable to global)"
+else
+  echo "Kernel fusion: ON — local times INCLUDE quantization, global times do not" >&2
+fi
+
+# Validate the whole selection before running anything, so a typo fails now
+# rather than after the warm-up has already burned several minutes.
 for mode in "${SELECTED_MODES[@]}"; do
   if [[ -z "${MODE_LEVELS[$mode]:-}" ]]; then
     echo "unknown mode: $mode (valid: ${MODE_ORDER[*]})" >&2
     exit 1
   fi
+done
+for ds in "${SELECTED_DATASETS[@]}"; do
+  if [[ -z "${DS_DIR[$ds]:-}" ]]; then
+    echo "unknown dataset: $ds (valid: ${DATASET_ORDER[*]})" >&2
+    exit 1
+  fi
+done
+
+# ── Warm-up pass (results discarded) ──────────────────────────────────────
+# The first run of a given configuration is intermittently inflated — a
+# Global Decomposition measured at 1.0 GB/s where the next three variables of
+# the same dataset give 79 GB/s, i.e. 77x. It lands on whichever combination
+# runs first, and nothing downstream can tell it from a real measurement: it
+# is a plausible number that skews the per-dataset average by 20x. So run the
+# full selection once and throw it away, as scaling_repro.sbatch does. Set
+# WARMUP=0 to skip (roughly halves the runtime, at that risk).
+if [[ -z "${DRY_RUN:-}" && "${WARMUP:-1}" != "0" ]]; then
+  echo "########## Warm-up pass (results discarded) ##########"
+  for mode in "${SELECTED_MODES[@]}"; do
+    for ds in "${SELECTED_DATASETS[@]}"; do
+      for var in ${DS_VARS[$ds]}; do
+        run_one "$mode" "$ds" "$var" 0
+      done
+    done
+  done
+  echo "Warm-up complete."
+  echo
+fi
+
+for mode in "${SELECTED_MODES[@]}"; do
   echo "########## Mode: ${mode} (${MODE_LEVELS[$mode]}) ##########"
   for ds in "${SELECTED_DATASETS[@]}"; do
-    if [[ -z "${DS_DIR[$ds]:-}" ]]; then
-      echo "unknown dataset: $ds (valid: ${DATASET_ORDER[*]})" >&2
-      exit 1
-    fi
     for var in ${DS_VARS[$ds]}; do
       run_one "$mode" "$ds" "$var"
     done

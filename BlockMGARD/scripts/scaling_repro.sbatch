@@ -61,6 +61,9 @@ GPU_COUNTS="${GPU_COUNTS:-1 2 3 4}"     # scale points to sweep
 # which is what -ll/-gl actually configure; without it mgard-x silently falls
 # back to the default MultiDim decomposition.
 ERR_MODE="rel"
+# Kernel fusion is left ON (MGARD's default -- no -nkf here). This measures
+# BlockMGARD as it actually runs; the unfused path exists only so the ablation
+# scripts can time decomposition apart from quantization.
 FIXED_FLAGS="-hh -s inf -l huffman -d cuda -ll 1 -gl 2 -v 2"
 
 # ── Datasets: "NAME|file|dtype|dims|error_bound" ──────────────────────────
